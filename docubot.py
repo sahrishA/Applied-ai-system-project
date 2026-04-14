@@ -1,6 +1,6 @@
 """
 Core DocuBot class responsible for:
-- Loading documents from the docs/ folder
+- Loading documents from the docs/ folder and external sources (folders or URLs)
 - Building a simple retrieval index (Phase 1)
 - Retrieving relevant snippets (Phase 1)
 - Supporting retrieval only answers
@@ -9,16 +9,18 @@ Core DocuBot class responsible for:
 
 import os
 import glob
+import urllib.request
 
 class DocuBot:
     MIN_USEFUL_SCORE = 1
-
-    def __init__(self, docs_folder="docs", llm_client=None):
+    def __init__(self, docs_folder="docs", external_sources=None, llm_client=None):
         """
         docs_folder: directory containing project documentation files
+        external_sources: optional list of additional sources (folder paths or URLs)
         llm_client: optional Gemini client for LLM based answers
         """
         self.docs_folder = docs_folder
+        self.external_sources = external_sources or []
         self.llm_client = llm_client
 
         # Load documents into memory
@@ -33,17 +35,48 @@ class DocuBot:
 
     def load_documents(self):
         """
-        Loads all .md and .txt files inside docs_folder.
+        Loads all .md and .txt files from docs_folder and external_sources.
+        external_sources can include folder paths or URLs.
         Returns a list of tuples: (filename, text)
         """
         docs = []
+        
+        # Load from main docs_folder
         pattern = os.path.join(self.docs_folder, "*.*")
         for path in glob.glob(pattern):
-            if path.endswith(".md") or path.endswith(".txt"):
+            if path.endswith((".md", ".txt")):
                 with open(path, "r", encoding="utf8") as f:
                     text = f.read()
                 filename = os.path.basename(path)
                 docs.append((filename, text))
+        
+        # Load from external sources
+        for source in self.external_sources:
+            if source.startswith(("http://", "https://")):
+                # Handle URL
+                try:
+                    with urllib.request.urlopen(source) as response:
+                        text = response.read().decode('utf-8')
+                    # Extract filename from URL
+                    filename = source.split('/')[-1] or f"external_doc_{len(docs)}"
+                    if not filename.endswith((".md", ".txt")):
+                        filename += ".txt"  # Assume plain text if no extension
+                    docs.append((filename, text))
+                except Exception as e:
+                    print(f"Warning: Failed to fetch {source}: {e}")
+            else:
+                # Assume it's a folder path
+                if os.path.isdir(source):
+                    pattern = os.path.join(source, "*.*")
+                    for path in glob.glob(pattern):
+                        if path.endswith((".md", ".txt")):
+                            with open(path, "r", encoding="utf8") as f:
+                                text = f.read()
+                            filename = os.path.basename(path)
+                            docs.append((filename, text))
+                else:
+                    print(f"Warning: External source '{source}' is not a valid directory.")
+        
         return docs
 
     # -----------------------------------------------------------
