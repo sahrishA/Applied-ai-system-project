@@ -10,6 +10,9 @@ Core DocuBot class responsible for:
 import os
 import glob
 import urllib.request
+import re
+import math
+from collections import defaultdict, Counter
 
 class DocuBot:
     MIN_USEFUL_SCORE = 1
@@ -28,6 +31,13 @@ class DocuBot:
 
         # Build a retrieval index (implemented in Phase 1)
         self.index = self.build_index(self.documents)
+        
+        # Precompute document stats for scoring
+        self.total_docs = len(self.documents)
+        self.doc_lengths = {}
+        for filename, text in self.documents:
+            words = re.findall(r'\b\w+\b', text.lower())
+            self.doc_lengths[filename] = len(words)
 
     # -----------------------------------------------------------
     # Document Loading
@@ -85,48 +95,99 @@ class DocuBot:
 
     def build_index(self, documents):
         """
-        Build a tiny inverted index mapping lowercase words to the documents
-        they appear in.
+        Build an inverted index mapping words to documents with term frequencies.
 
-        Example structure:
-        {
-            "token": ["AUTH.md", "API_REFERENCE.md"],
-            "database": ["DATABASE.md"]
-        }
-
-        Keep this simple: split on whitespace, lowercase tokens,
-        ignore punctuation if needed.
+        Improved tokenization: uses regex to extract words, ignores punctuation.
+        Structure: {word: {filename: term_frequency}}
         """
-        index = {}
+        """
+            index = {}  # Plain dict
+            for filename, text in documents:
+                words = text.lower().split()  # Basic split on whitespace (keeps punctuation)
+                for word in words:
+                    if word not in index:
+                        index[word] = []  # List of filenames
+                    if filename not in index[word]:
+                        index[word].append(filename)  # Just tracks presence (1 if present, 0 otherwise)
+            return index
+    Data structure: {word: [filename1, filename2, ...]}
+        """
+        index = defaultdict(dict) //dictionary where each word maps to another dictionary of filename to term frequency
         for filename, text in documents:
-            words = text.lower().split()
-            for word in words:
-                if word not in index:
-                    index[word] = []
-                if filename not in index[word]:
-                    index[word].append(filename)
+            words = re.findall(r'\b\w+\b', text.lower())
+            word_counts = Counter(words)
+            for word, count in word_counts.items():
+                index[word][filename] = count
         return index
-
+    """data structure: {word: {filename: count, ...}} (nested dict with term frequencies).
+    What it stores: Frequency (how many times the word appears in each doc), enabling TF(term frequency) calculations.
+    score_document (e.g., self.index[word][filename] directly gets the count).
+    Formula: TF = (number of times the word appears in the document) / (total words in the document)"""
     # -----------------------------------------------------------
     # Scoring and Retrieval (Phase 1)
     # -----------------------------------------------------------
 
-    def score_document(self, query, text):
+    def score_document(self, query, filename):
         """
-        TODO (Phase 1):
         Return a simple relevance score for how well the text matches the query.
-
-        Suggested baseline:
         
+        Suggested baseline:
         - Convert query into lowercase words
         - Count how many appear in the text
         - Return the count as the score
         """
-        query_words=query.lower().split()
+        # origianal simple word counting approach:
+        """
+        query_words = query.lower().split()
         score = 0
         for word in query_words:
             if word in text.lower():
-                score+=1
+                score += 1
+        return score
+        """
+        """
+        Return a TF-IDF based relevance score for how well the query matches the document.
+
+        Uses term frequency (TF) normalized by document length, and inverse document frequency (IDF).
+        """
+        """
+        Term Frequency (TF):
+
+    Measures how often a query word appears within a specific document.
+    Formula: TF = (number of times the word appears in the document) / (total words in the document)
+    Why normalize by document length? Longer documents naturally have more word occurrences, so this prevents them from unfairly scoring higher. For example:
+    In a short doc (50 words) with "database" appearing 2 times: TF = 2/50 = 0.04
+    In a long doc (500 words) with "database" appearing 2 times: TF = 2/500 = 0.004 (lower score, fairer)
+    Inverse Document Frequency (IDF):
+
+    Measures how rare or unique a word is across the entire corpus (all documents).
+    Formula: IDF = log(total number of documents / number of documents containing the word)
+    Why inverse? Common words (e.g., "the", "and") appear in many docs, so their IDF is low (close to 0). Rare words (e.g., "authentication") have high IDF, making them more valuable for distinguishing relevant docs.
+    Example: If "database" appears in 3 out of 5 docs, IDF = log(5/3) ≈ log(1.67) ≈ 0.51. If "token" appears in 1 out of 5, IDF = log(5/1) ≈ log(5) ≈ 1.61 (higher weight).
+    TF-IDF Score:
+
+    Combines them: TF-IDF = TF * IDF
+    For each query word, calculate TF-IDF for the document, then sum across all query words.
+    Higher scores mean the document is more relevant (frequent use of rare query terms).
+    In DocuBot's Code
+    This runs for each unique word in the query, summing the TF-IDF contributions.
+    Result: Documents are ranked by relevance, not just raw matches.
+    Why It's Better Than Simple Word Counting
+    Old approach (original DocuBot): Count how many query words appear anywhere in the text. A doc with 10 "the" matches scores the same as one with 10 "database" matches—ignores rarity and length.
+    TF-IDF advantage: Prioritizes docs with concentrated, meaningful terms. For query "database connection":
+    A doc mentioning "database" 5 times (rare term) scores higher than one mentioning "the" 5 times (common term).
+    Prevents long, irrelevant docs from dominating results.
+    Real-world impact: Powers search engines like Google. In DocuBot, it improves evaluation.py hit rates by surfacing better snippets for RAG/LLM modes.
+    If a query word doesn't exist in the index, its contribution is 0. For very small corpora (few docs), IDF can be extreme—consider smoothing if needed. Let me know if you'd like code examples or tweaks!"""
+        
+        query_words = set(re.findall(r'\b\w+\b', query.lower()))
+        score = 0.0
+        for word in query_words:
+            if word in self.index and filename in self.index[word]:
+                tf = self.index[word][filename] / self.doc_lengths[filename]
+                df = len(self.index[word])
+                idf = math.log(self.total_docs / df) if df > 0 else 0
+                score += tf * idf
         return score
 
     def _is_useful_score(self, score):
@@ -135,14 +196,13 @@ class DocuBot:
 
     def retrieve(self, query, top_k=3):
         """
-        TODO (Phase 1):
-        Use the index and scoring function to select top_k relevant document snippets.
+        Use the index and TF-IDF scoring to select top_k relevant document snippets.
 
         Return a list of (filename, text) sorted by score descending.
         """
         results = []
         for filename, text in self.documents:
-            score = self.score_document(query, text)
+            score = self.score_document(query, filename)
             results.append((score, filename, text))
 
         results.sort(reverse=True)
