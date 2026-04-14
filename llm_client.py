@@ -75,6 +75,35 @@ class GeminiClient:
         if not snippets:
             return "I do not know based on the docs I have."
 
+        # Previous prompt version (kept for reference):
+        # prompt = f"""
+        # You are a cautious documentation assistant helping developers understand a codebase.
+        #
+        # You will receive:
+        # - A developer question
+        # - A small set of snippets from project files
+        #
+        # Your job:
+        # - Answer the question using only the information in the snippets.
+        # - If the snippets do not provide enough evidence, refuse to guess.
+        #
+        # Snippets:
+        # {context}
+        #
+        # Developer question:
+        # {query}
+        #
+        # Rules:
+        # - Use only the information in the snippets. Do not invent new functions,
+        #   endpoints, or configuration values.
+        # - If the snippets are not enough to answer confidently, reply exactly:
+        #   "I do not know based on the docs I have."
+        # - When you do answer, briefly mention which files you relied on.
+        # """
+
+        source_filenames = [filename for filename, _ in snippets]
+        source_list = ", ".join(source_filenames)
+
         context_blocks = []
         for filename, text in snippets:
             block = f"File: {filename}\n{text}\n"
@@ -90,8 +119,13 @@ You will receive:
 - A small set of snippets from project files
 
 Your job:
-- Answer the question using only the information in the snippets.
-- If the snippets do not provide enough evidence, refuse to guess.
+- Answer the question using only the information provided in the snippets.
+- Do not invent new functions, endpoints, or configuration values.
+- Do not use any knowledge outside the snippets and the file names.
+- If the snippets are not enough to answer confidently, reply exactly:
+  "I do not know based on the docs I have."
+- If you do answer, end with a line like:
+  "Sources used: [FILENAME1, FILENAME2]"
 
 Snippets:
 {context}
@@ -100,12 +134,18 @@ Developer question:
 {query}
 
 Rules:
-- Use only the information in the snippets. Do not invent new functions,
-  endpoints, or configuration values.
-- If the snippets are not enough to answer confidently, reply exactly:
-  "I do not know based on the docs I have."
-- When you do answer, briefly mention which files you relied on.
+- Only use the text in the snippets above.
+- If you cannot answer from the snippets, refuse with the exact phrase.
+- On the final line, include: Sources used: [{source_list}]
 """
 
         response = self.model.generate_content(prompt)
-        return (response.text or "").strip()
+        answer = (response.text or "").strip()
+
+        if answer == "I do not know based on the docs I have.":
+            return answer
+
+        if "Sources used:" not in answer:
+            answer = f"{answer}\n\nSources used: [{source_list}]"
+
+        return answer

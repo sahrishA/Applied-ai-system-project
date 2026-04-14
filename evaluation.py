@@ -10,6 +10,8 @@ The evaluation is intentionally simple: it checks whether DocuBot retrieves
 the correct files for each query and reports a hit rate.
 """
 
+import re
+
 from dataset import SAMPLE_QUERIES
 
 
@@ -45,6 +47,58 @@ def expected_files_for_query(query):
         if key in query_lower:
             matches.extend(files)
     return matches
+
+
+# -----------------------------------------------------------
+# Evidence validation helpers
+
+
+def _query_evidence_matches(query, text):
+    query_words = set(re.findall(r'\b\w+\b', query.lower()))
+    text_words = set(re.findall(r'\b\w+\b', text.lower()))
+    return bool(query_words & text_words)
+
+
+def evaluate_retrieval_with_evidence(bot, top_k=3):
+    """
+    Runs DocuBot retrieval and validates that retrieved snippets also
+    contain evidence from the query.
+
+    Returns a tuple: (hit_rate, evidence_rate, detailed_results)
+    """
+    results = []
+    hits = 0
+    evidence_hits = 0
+
+    for query in SAMPLE_QUERIES:
+        expected = expected_files_for_query(query)
+        retrieved = bot.retrieve(query, top_k=top_k)
+
+        retrieved_files = [fname for fname, _ in retrieved]
+        evidence = any(
+            _query_evidence_matches(query, snippet_text)
+            for _, snippet_text in retrieved
+        )
+
+        hit = any(f in retrieved_files for f in expected) if expected else False
+        valid = hit and evidence
+        if hit:
+            hits += 1
+        if valid:
+            evidence_hits += 1
+
+        results.append({
+            "query": query,
+            "expected": expected,
+            "retrieved": retrieved_files,
+            "hit": hit,
+            "evidence": evidence,
+            "valid": valid,
+        })
+
+    hit_rate = hits / len(SAMPLE_QUERIES)
+    evidence_rate = evidence_hits / len(SAMPLE_QUERIES)
+    return hit_rate, evidence_rate, results
 
 
 # -----------------------------------------------------------
